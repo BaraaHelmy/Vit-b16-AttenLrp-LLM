@@ -5,7 +5,7 @@ from typing import Tuple
 
 import torch
 from torch import nn
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, random_split  # <<< CHANGE: import random_split
 
 from cub_dataset import CUBDataset
 from vit_cub_model import create_vit_cub_model
@@ -15,18 +15,38 @@ def create_dataloaders(
     data_root: Path,
     batch_size: int = 32,
     num_workers: int = 4,
-) -> Tuple[DataLoader, DataLoader]:
+) -> Tuple[DataLoader, DataLoader, DataLoader]:
     """
-    Create train and test DataLoaders for CUB-200.
-    We use the same transforms as already defined in CUBDataset.
+    Create train, validation, and test DataLoaders for CUB-200.
+
+    CHANGE:
+    - Official CUB train split is further split into train + validation
+    - Official CUB test split is kept untouched for final evaluation
     """
 
-    train_dataset = CUBDataset(
+    # ----------------------------
+    # Load full official TRAIN split
+    # ----------------------------
+    full_train_dataset = CUBDataset(
         root=str(data_root),
         split="train",
         transform=None,  # CUBDataset handles ViT transforms internally
     )
 
+    # ----------------------------
+    # Split train -> train / val (80/20)
+    # ----------------------------
+    train_size = int(0.8 * len(full_train_dataset))
+    val_size = len(full_train_dataset) - train_size
+
+    train_dataset, val_dataset = random_split(
+        full_train_dataset,
+        [train_size, val_size],
+    )  # <<< CHANGE: proper train/val split
+
+    # ----------------------------
+    # Load official TEST split (never touched during training)
+    # ----------------------------
     test_dataset = CUBDataset(
         root=str(data_root),
         split="test",
@@ -44,6 +64,14 @@ def create_dataloaders(
         pin_memory=pin_memory,
     )
 
+    val_loader = DataLoader(
+        val_dataset,
+        batch_size=batch_size,
+        shuffle=False,
+        num_workers=num_workers,
+        pin_memory=pin_memory,
+    )  # <<< CHANGE: validation loader
+
     test_loader = DataLoader(
         test_dataset,
         batch_size=batch_size,
@@ -52,7 +80,7 @@ def create_dataloaders(
         pin_memory=pin_memory,
     )
 
-    return train_loader, test_loader
+    return train_loader, val_loader, test_loader  # <<< CHANGE
 
 
 def train_one_epoch(
@@ -61,7 +89,7 @@ def train_one_epoch(
     criterion: nn.Module,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
-    max_batches=None,  # optional for quick tests
+    max_batches=None,
 ) -> Tuple[float, float]:
     """
     Train the model for one epoch.
@@ -80,7 +108,7 @@ def train_one_epoch(
 
         optimizer.zero_grad()
 
-        outputs = model(images)  # [B, num_classes]
+        outputs = model(images)
         loss = criterion(outputs, labels)
 
         loss.backward()
@@ -92,11 +120,12 @@ def train_one_epoch(
         correct += (preds == labels).sum().item()
         total += labels.size(0)
 
-        # progress print every 10 batches
         if batch_idx % 10 == 0:
-            print(f"  [batch {batch_idx+1}/{num_batches}] " f"loss: {loss.item():.4f}")
+            print(
+                f"  [batch {batch_idx+1}/{num_batches}] "
+                f"loss: {loss.item():.4f}"
+            )
 
-        # OPTIONAL: limit number of batches for quick tests
         if max_batches is not None and (batch_idx + 1) >= max_batches:
             break
 
@@ -145,7 +174,7 @@ def main():
     # ============================
     # 1. Basic config
     # ============================
-    data_root = Path("dataset/raw/CUB_200_2011")  # adjust if needed
+    data_root = Path("dataset/raw/CUB_200_2011")
     checkpoints_dir = Path("checkpoints")
     checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
@@ -162,11 +191,11 @@ def main():
     # ============================
     # 2. Data
     # ============================
-    train_loader, test_loader = create_dataloaders(
+    train_loader, val_loader, test_loader = create_dataloaders(
         data_root=data_root,
         batch_size=batch_size,
         num_workers=num_workers,
-    )
+    )  # <<< CHANGE: now three loaders
 
     # ============================
     # 3. Model, loss, optimizer
@@ -174,7 +203,7 @@ def main():
     model = create_vit_cub_model(
         num_classes=num_classes,
         pretrained=True,
-        freeze_backbone=False,  # change to True if you want to freeze later
+        freeze_backbone=False,
     )
     model.to(device)
 
@@ -199,22 +228,21 @@ def main():
             criterion=criterion,
             optimizer=optimizer,
             device=device,
-            max_batches=None,  # run full epoch
         )
 
+        # <<< CHANGE: validation now uses val_loader (NOT test_loader)
         val_loss, val_acc = evaluate(
             model=model,
-            dataloader=test_loader,
+            dataloader=val_loader,
             criterion=criterion,
             device=device,
         )
 
         print(
-            f"Train  - loss: {train_loss:.4f}, acc: {train_acc*100:.2f}%\n"
-            f"Val    - loss: {val_loss:.4f}, acc: {val_acc*100:.2f}%"
+            f"Train - loss: {train_loss:.4f}, acc: {train_acc*100:.2f}%\n"
+            f"Val   - loss: {val_loss:.4f}, acc: {val_acc*100:.2f}%"
         )
 
-        # Save best model
         if val_acc > best_val_acc:
             best_val_acc = val_acc
             ckpt_path = checkpoints_dir / "vit_cub_best.pt"
@@ -228,11 +256,29 @@ def main():
                 ckpt_path,
             )
             print(
-                f"-> Saved new best model to {ckpt_path} (val_acc={val_acc*100:.2f}%)"
+                f"-> Saved new best model "
+                f"(val_acc={val_acc*100:.2f}%)"
             )
 
     print("\nTraining finished.")
-    print(f"Best val accuracy: {best_val_acc*100:.2f}%")
+    print(f"Best validation accuracy: {best_val_acc*100:.2f}%")
+
+    # ============================
+    # 5. FINAL TEST EVALUATION
+    # ============================
+    print("\nRunning final evaluation on test set...")
+
+    checkpoint = torch.load(checkpoints_dir / "vit_cub_best.pt", map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+
+    test_loss, test_acc = evaluate(
+        model=model,
+        dataloader=test_loader,
+        criterion=criterion,
+        device=device,
+    )
+
+    print(f"Test - loss: {test_loss:.4f}, acc: {test_acc*100:.2f}%")
 
 
 if __name__ == "__main__":
