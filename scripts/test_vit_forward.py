@@ -188,13 +188,13 @@ def main():
     # ------------------------------------------------------------------
     # Dataset
     # ------------------------------------------------------------------
-    train_dataset = CUBDataset(
+    test_dataset = CUBDataset(
         root=str(data_root),
-        split="train",
+        split="test",
         transform=None,  # keep CUBDataset's internal ViT transforms
     )
 
-    print(f"Dataset size: {len(train_dataset)}")
+    print(f"Dataset size: {len(test_dataset)}")
     print(f"Will generate LRP for {num_samples} samples")
 
     # ------------------------------------------------------------------
@@ -216,7 +216,7 @@ def main():
     # Pick sample indices (random, reproducible)
     # ------------------------------------------------------------------
     random.seed(42)
-    sample_indices = random.sample(range(len(train_dataset)), k=min(num_samples, len(train_dataset)))
+    sample_indices = random.sample(range(len(test_dataset)), k=min(num_samples, len(test_dataset)))
 
     results = []
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -224,7 +224,7 @@ def main():
     for i, sample_idx in enumerate(sample_indices, start=1):
         print(f"\n[{i}/{len(sample_indices)}] Processing sample_idx={sample_idx} ...")
         try:
-            lrp_result = compute_lrp_for_sample(model, train_dataset, sample_idx, device)
+            lrp_result = compute_lrp_for_sample(model, test_dataset, sample_idx, device)
             meta = save_visualizations(lrp_result, sample_idx, output_dir)
             results.append(meta)
 
