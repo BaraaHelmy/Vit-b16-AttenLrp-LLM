@@ -1,5 +1,5 @@
 # scripts/inspect_lrp_predictions.py
-#
+# Reads LRP_results.json and outputs the confidence scores for the LRP samples
 # Inspect predictions for the 20 LRP samples:
 # - dataset index
 # - ground truth class (id + name)
@@ -33,10 +33,10 @@ def main():
     ckpt_path = Path("checkpoints/vit_cub_best.pt")
     classes_txt = data_root / "classes.txt"
 
-    # Dataset
+    # Dataset (TEST SET - same as used for LRP generation)
     dataset = CUBDataset(
         root=str(data_root),
-        split="test",
+        split="test",  # Using test set
         transform=None,
     )
 
@@ -58,11 +58,19 @@ def main():
     # LRP results
     results = json.load(open(results_path))
 
-    print("\n=== Predictions for LRP samples ===\n")
+    print("\n" + "=" * 80)
+    print("New Confidence Results (Test Set)")
+    print("=" * 80)
+    print(f"{'Sample':<10} {'GT':<30} {'PRED':<30} {'Confidence':<12} {'Status':<10}")
+    print("-" * 80)
+
+    correct_count = 0
+    total_count = 0
 
     with torch.no_grad():
         for r in results:
             idx = r["sample_idx"]
+            total_count += 1
 
             x, gt = dataset[idx]
             x = x.unsqueeze(0).to(device)
@@ -76,13 +84,29 @@ def main():
             pred = int(pred)
             conf = float(conf)
 
+            # Determine if prediction is correct
+            is_correct = (gt == pred)
+            if is_correct:
+                correct_count += 1
+                status = "✓ Correct"
+            else:
+                status = "✗ Wrong"
+
+            # Format class names (replace underscores with spaces for readability)
+            gt_name = id_to_name[gt].replace("_", " ")
+            pred_name = id_to_name[pred].replace("_", " ")
+
             print(
-                f"idx={idx:6d} | "
-                f"GT={gt:3d} ({id_to_name[gt]}) | "
-                f"PRED={pred:3d} ({id_to_name[pred]}) | "
-                f"conf={conf:.3f}"
+                f"{idx:<10} "
+                f"{gt_name:<30} "
+                f"{pred_name:<30} "
+                f"{conf:<12.3f} "
+                f"{status:<10}"
             )
 
+    print("-" * 80)
+    print(f"\nSummary: {correct_count}/{total_count} correct ({100*correct_count/total_count:.1f}% accuracy)")
+    print("=" * 80)
     print("\nDone.")
 
 
